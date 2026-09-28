@@ -1,0 +1,366 @@
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+import os
+import io
+import glob
+import time
+from datetime import datetime, timezone, timedelta
+import streamlit.components.v1 as components
+from docx import Document
+from docx.shared import Inches, Pt, RGBColor
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.table import WD_TABLE_ALIGNMENT
+from docx.oxml import parse_xml
+from docx.oxml.ns import nsdecls
+
+# Configuración de zona horaria para Quito, Ecuador (UTC-5)
+ZONA_HORARIA_QUITO = timezone(timedelta(hours=-5))
+
+def obtener_hora_quito():
+    return datetime.now(ZONA_HORARIA_QUITO)
+
+# Configuración de la página Streamlit
+st.set_page_config(
+    page_title="Dashboard WAF & Sustentación de Tesis - UCG",
+    page_icon="🛡️",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Estilos CSS institucional (Modo Oscuro / Azul F5)
+st.markdown("""
+    <style>
+    .stApp { background-color: #0F172A; color: #F8FAFC; }
+    .kpi-card { border-radius: 12px; padding: 16px 12px; text-align: center; color: white; box-shadow: 0 4px 12px rgba(0,0,0,0.2); }
+    .kpi-tot { background: linear-gradient(135deg, #0284C7 0%, #0369A1 100%); }
+    .kpi-alto { background: linear-gradient(135deg, #DC2626 0%, #991B1B 100%); }
+    .kpi-med { background: linear-gradient(135deg, #D97706 0%, #B45309 100%); }
+    .kpi-bajo { background: linear-gradient(135deg, #16A34A 0%, #15803D 100%); }
+    .kpi-title { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; opacity: 0.95; }
+    .kpi-number { font-size: 32px; font-weight: 800; margin-top: 2px; }
+    .section-header { background-color: #1E293B; padding: 14px 20px; border-radius: 10px; border-left: 5px solid #0284C7; margin-bottom: 15px; }
+    h1, h2, h3 { color: #F8FAFC !important; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+    [data-testid="stSidebar"] { background-color: #0B1120; }
+    [data-testid="stSidebar"] * { color: #F8FAFC !important; }
+    .author-credit { font-size: 11px; color: #94A3B8; font-style: italic; margin-top: -10px; margin-bottom: 15px; }
+    .slide-box { background-color: #1E293B; padding: 20px; border-radius: 10px; border: 1px solid #334155; margin-bottom: 20px; }
+    </style>
+""", unsafe_allow_html=True)
+
+ARCHIVO_HISTORICO = "historico_matrices_waf.xlsx"
+
+# Widget Reloj en Vivo en Sidebar (Quito, Ecuador)
+reloj_html = """
+<div style="background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.15); border-radius: 10px; padding: 10px 12px; text-align: center; font-family: 'Segoe UI', Roboto, sans-serif;">
+    <div style="font-size: 12px; font-weight: 700; color: #38BDF8; text-transform: uppercase; letter-spacing: 0.5px;">📍 QUITO, ECUADOR ⛅</div>
+    <div id="reloj-quito" style="font-size: 22px; font-weight: 800; color: #F8FAFC; margin: 4px 0;">⏰ 00:00:00</div>
+    <div id="fecha-quito" style="font-size: 11px; color: #94A3B8;">📅 00/00/0000 | 18°C Parcialmente Nublado</div>
+</div>
+<script>
+function actualizarRelojQuito() {
+    const ahora = new Date();
+    const utc = ahora.getTime() + (ahora.getTimezoneOffset() * 60000);
+    const horaQuito = new Date(utc + (3600000 * -5));
+    const h = String(horaQuito.getHours()).padStart(2, '0');
+    const m = String(horaQuito.getMinutes()).padStart(2, '0');
+    const s = String(horaQuito.getSeconds()).padStart(2, '0');
+    const dia = String(horaQuito.getDate()).padStart(2, '0');
+    const mes = String(horaQuito.getMonth() + 1).padStart(2, '0');
+    const anio = horaQuito.getFullYear();
+    document.getElementById('reloj-quito').innerHTML = '⏰ ' + h + ':' + m + ':' + s;
+    document.getElementById('fecha-quito').innerHTML = '📅 ' + dia + '/' + mes + '/' + anio + ' | 18°C Parcialmente Nublado';
+}
+actualizarRelojQuito();
+setInterval(actualizarRelojQuito, 1000);
+</script>
+"""
+
+with st.sidebar:
+    components.html(reloj_html, height=115)
+
+# USUARIOS AUTORIZADOS
+USUARIOS_AUTORIZADOS = {
+    "david.valverde": {"clave": "Valverde2026!", "rol": "Administrador", "nombre": "David Ricardo Valverde Benítez"},
+    "gabriela.armendariz": {"clave": "GArmendariz2026!", "rol": "Administrador", "nombre": "Gabriela Armendariz"},
+    "admin": {"clave": "admin123", "rol": "Administrador", "nombre": "Administrador Principal"}
+}
+
+# CONTROL DE SESIÓN
+if 'autenticado' not in st.session_state:
+    st.session_state['autenticado'] = False
+
+if not st.session_state['autenticado']:
+    st.markdown("<br><br>", unsafe_allow_html=True)
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        st.markdown('<h1>🔒 Control de Acceso WAF</h1>', unsafe_allow_html=True)
+        st.markdown('<p class="author-credit">Maestría en Ciberseguridad - Universidad Casa Grande</p>', unsafe_allow_html=True)
+        st.caption("Ingrese sus credenciales autorizadas.")
+        
+        with st.form("form_login"):
+            usr_input = st.text_input("👤 Usuario:")
+            pwd_input = st.text_input("🔑 Contraseña:", type="password")
+            if st.form_submit_button("Iniciar Sesión", use_container_width=True):
+                usr_clean = usr_input.strip().lower()
+                if usr_clean in USUARIOS_AUTORIZADOS and USUARIOS_AUTORIZADOS[usr_clean]["clave"] == pwd_input:
+                    st.session_state['autenticado'] = True
+                    st.session_state['nombre_actual'] = USUARIOS_AUTORIZADOS[usr_clean]["nombre"]
+                    st.session_state['rol_actual'] = USUARIOS_AUTORIZADOS[usr_clean]["rol"]
+                    st.rerun()
+                else:
+                    st.error("❌ Credenciales incorrectas.")
+    st.stop()
+
+# LIMPIEZA Y PROCESAMIENTO DE MATRICES
+def procesar_df(df, fecha_carga_str=None):
+    if df.empty:
+        return pd.DataFrame()
+
+    df.columns = [str(c).strip() for c in df.columns]
+
+    col_pais = next((c for c in df.columns if 'PAIS' in c.upper() or 'PAÍS' in c.upper()), None)
+    col_riesgo = next((c for c in df.columns if 'RIESGO' in c.upper()), None)
+    col_ataque = next((c for c in df.columns if 'ATAQUE' in c.upper()), None)
+    col_app = next((c for c in df.columns if 'APLICACI' in c.upper() or 'WEB' in c.upper()), None)
+
+    rename_dict = {}
+    if col_pais: rename_dict[col_pais] = 'PAÍS'
+    if col_riesgo: rename_dict[col_riesgo] = 'RIESGO ABUSEIPDB (%)'
+    if col_ataque: rename_dict[col_ataque] = 'TIPO DE ATAQUE'
+    if col_app: rename_dict[col_app] = 'NOMBRE APLICACIÓN WEB'
+    
+    df = df.rename(columns=rename_dict)
+
+    if 'PAÍS' not in df.columns: df['PAÍS'] = 'Desconocido'
+    if 'TIPO DE ATAQUE' not in df.columns: df['TIPO DE ATAQUE'] = 'No especificado'
+    if 'NOMBRE APLICACIÓN WEB' not in df.columns: df['NOMBRE APLICACIÓN WEB'] = 'General'
+
+    if fecha_carga_str and 'FechaCargaMatriz' not in df.columns:
+        df['FechaCargaMatriz'] = fecha_carga_str
+
+    if 'RIESGO ABUSEIPDB (%)' in df.columns:
+        df['Riesgo_Num'] = df['RIESGO ABUSEIPDB (%)'].astype(str).str.replace('%', '').str.strip()
+        df['Riesgo_Num'] = pd.to_numeric(df['Riesgo_Num'], errors='coerce').fillna(0)
+    else:
+        df['Riesgo_Num'] = 0
+
+    def clasificar_riesgo(val):
+        if val == 0: return 'Seguro (0%)'
+        elif val <= 25: return 'Bajo (1-25%)'
+        elif val <= 60: return 'Medio (26-60%)'
+        else: return 'Crítico (61-100%)'
+
+    df['Nivel_Riesgo'] = df['Riesgo_Num'].apply(clasificar_riesgo)
+    return df
+
+# CARGA DE HISTÓRICO O ARCHIVO INICIAL
+@st.cache_data(ttl=1)
+def cargar_historico_base():
+    if os.path.exists(ARCHIVO_HISTORICO):
+        try:
+            return pd.read_excel(ARCHIVO_HISTORICO)
+        except Exception:
+            pass
+    
+    # Buscar archivos Excel locales como resultado_ips...
+    archivos = glob.glob("resultado_ips*.xlsx")
+    if archivos:
+        try:
+            df_init = pd.read_excel(archivos[0], sheet_name='Reporte IPs')
+        except Exception:
+            df_init = pd.read_excel(archivos[0], sheet_name=0)
+        return procesar_df(df_init, fecha_carga_str=obtener_hora_quito().strftime("%Y-%m-%d"))
+    return pd.DataFrame()
+
+df_base = cargar_historico_base()
+
+# PESTAÑAS PRINCIPALES DE LA APLICACIÓN
+st.sidebar.markdown(f"👤 **Usuario:** {st.session_state.get('nombre_actual')}")
+if st.sidebar.button("🚪 Cerrar Sesión"):
+    st.session_state['autenticado'] = False
+    st.rerun()
+
+st.sidebar.markdown("---")
+
+tab_dash, tab_tesis, tab_admin = st.tabs([
+    "📊 Dashboard WAF & IPs", 
+    "🎓 Defensa de Tesis (UCG)", 
+    "⚙️ Carga Diaria & Histórico"
+])
+
+# =============================================================================
+# PESTAÑA 1: DASHBOARD DE MONITOREO WAF E IPS
+# =============================================================================
+with tab_dash:
+    if df_base.empty:
+        st.warning("⚠️ No hay matrices cargadas en el sistema. Ve a la pestaña '⚙️ Carga Diaria & Histórico' para subir la primera matriz.")
+    else:
+        st.sidebar.title("📌 Consulta Histórica por Fecha")
+        fechas_disponibles = sorted([str(x) for x in df_base["FechaCargaMatriz"].unique() if pd.notnull(x)], reverse=True) if "FechaCargaMatriz" in df_base.columns else []
+        
+        opcion_fecha = st.sidebar.selectbox("📂 Seleccionar Matriz por Fecha:", ["🌐 Ver Todo el Histórico Acumulado"] + fechas_disponibles)
+        
+        if opcion_fecha == "🌐 Ver Todo el Histórico Acumulado":
+            df_fecha = df_base.copy()
+            fecha_lbl = "Consolidado Completo"
+        else:
+            df_fecha = df_base[df_base["FechaCargaMatriz"].astype(str) == opcion_fecha]
+            fecha_lbl = opcion_fecha
+
+        # Filtros adicionales
+        st.sidebar.markdown("---")
+        paises = ["Todos"] + sorted([str(x) for x in df_fecha['PAÍS'].dropna().unique() if str(x).strip() != ""])
+        pais_sel = st.sidebar.selectbox("Filtrar por País:", paises)
+
+        apps = ["Todas"] + sorted([str(x) for x in df_fecha['NOMBRE APLICACIÓN WEB'].dropna().unique() if str(x).strip() != ""])
+        app_sel = st.sidebar.selectbox("Filtrar por Aplicación Web:", apps)
+
+        df_filtrado = df_fecha.copy()
+        if pais_sel != "Todos":
+            df_filtrado = df_filtrado[df_filtrado['PAÍS'] == pais_sel]
+        if app_sel != "Todas":
+            df_filtrado = df_filtrado[df_filtrado['NOMBRE APLICACIÓN WEB'] == app_sel]
+
+        # Título y Métricas
+        st.title("🛡️ Dashboard WAF - Monitoreo de IPs y Ataques")
+        st.caption(f"📌 **Consulta Activa:** {fecha_lbl} | **Total Registros Evaluados:** {len(df_filtrado):,}")
+
+        tot_ips = len(df_filtrado)
+        criticas = len(df_filtrado[df_filtrado['Riesgo_Num'] > 60])
+        medios = len(df_filtrado[(df_filtrado['Riesgo_Num'] >= 26) & (df_filtrado['Riesgo_Num'] <= 60)])
+        seguros = len(df_filtrado[df_filtrado['Riesgo_Num'] <= 25])
+
+        k1, k2, k3, k4 = st.columns(4)
+        k1.markdown(f'<div class="kpi-card kpi-tot"><div class="kpi-title">Total Registros / IPs</div><div class="kpi-number">{tot_ips:,}</div></div>', unsafe_allow_html=True)
+        k2.markdown(f'<div class="kpi-card kpi-alto"><div class="kpi-title">Riesgo Crítico (61-100%)</div><div class="kpi-number">{criticas:,}</div></div>', unsafe_allow_html=True)
+        k3.markdown(f'<div class="kpi-card kpi-med"><div class="kpi-title">Riesgo Medio (26-60%)</div><div class="kpi-number">{medios:,}</div></div>', unsafe_allow_html=True)
+        k4.markdown(f'<div class="kpi-card kpi-bajo"><div class="kpi-title">Riesgo Bajo/Seguro (0-25%)</div><div class="kpi-number">{seguros:,}</div></div>', unsafe_allow_html=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        col_g1, col_g2 = st.columns(2)
+        with col_g1:
+            st.subheader("Top Tipos de Ataques Detectados")
+            df_at = df_filtrado['TIPO DE ATAQUE'].value_counts().head(8).reset_index()
+            df_at.columns = ['Tipo de Ataque', 'Eventos']
+            fig_at = px.bar(df_at, x='Eventos', y='Tipo de Ataque', orientation='h', color='Eventos', color_continuous_scale='Reds', text='Eventos')
+            fig_at.update_layout(height=320, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font_color='white')
+            st.plotly_chart(fig_at, use_container_width=True)
+
+        with col_g2:
+            st.subheader("Origen del Tráfico por País")
+            df_p = df_filtrado['PAÍS'].value_counts().head(8).reset_index()
+            df_p.columns = ['País', 'Total IPs']
+            fig_p = px.pie(df_p, names='País', values='Total IPs', hole=0.4, color_discrete_sequence=px.colors.qualitative.Pastel)
+            fig_p.update_layout(height=320, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font_color='white')
+            st.plotly_chart(fig_p, use_container_width=True)
+
+        st.markdown("---")
+        st.subheader("🔍 Matriz Completa de IPs Auditadas")
+        cols_mostrar = [c for c in ['FechaCargaMatriz', 'IP', 'PAÍS', 'RIESGO ABUSEIPDB (%)', 'Nivel_Riesgo', 'TIPO DE ATAQUE', 'NOMBRE APLICACIÓN WEB', 'Conexión Equipo Interno', 'Dest_port'] if c in df_filtrado.columns]
+        st.dataframe(df_filtrado[cols_mostrar], use_container_width=True, hide_index=True)
+
+# =============================================================================
+# PESTAÑA 2: SUSTENTACIÓN Y DEFENSA DE TESIS (UCG)
+# =============================================================================
+with tab_tesis:
+    st.title("🎓 Defensa de Tesis de Maestría - Universidad Casa Grande")
+    st.markdown("**Tema:** Implementación de un Firewall de Aplicaciones Web (WAF) para el Fortalecimiento de la Seguridad en el Acceso a Aplicaciones Judiciales")
+    st.markdown("**Autor:** David Ricardo Valverde Benítez | **Fecha:** 20 de mayo de 2026")
+    st.markdown("---")
+
+    t_s1, t_s2, t_s3 = st.tabs(["📄 Diapositivas de Presentación", "📊 Justificación de Falsos Positivos", "🗣️ Guión de Exposición (Speech)"])
+
+    with t_s1:
+        st.markdown("### Resumen Diapositiva por Diapositiva")
+        st.markdown("""
+        * **Página 1 - Portada:** Título del Proyecto, Autor y Maestría en Ciberseguridad UCG.
+        * **Página 2 - Contexto:** Transformación digital pública en Ecuador; servicios judiciales como infraestructura crítica expuesta a ciberataques.
+        * **Página 3 - Planteamiento del Problema:** Falta de inspección L7 perimetral, riesgo crítico de interrupción de trámites y fuga de datos.
+        * **Página 4 - Objetivos:** Implementación F5 rSeries r5900, mitigación OWASP Top 10, optimización operativa y monitoreo continuo.
+        * **Página 5 - Marco Referencial:** ISO/IEC 27001 (SGSI), NIST CSF 2.0 (Resiliencia) y OWASP Top 10 (Vulnerabilidades Web).
+        * **Página 6 - Arquitectura:** Flujo de inspección L7 bidireccional (proxy inverso) resguardando aplicaciones y microservicios de API.
+        * **Página 7 - Tecnología:** F5 rSeries r5900 con BIG-IP Tenants aislados por aplicación y administración centralizada mediante BIG-IQ.
+        * **Página 11 - Resultados:** 99.9% Disponibilidad | 95% Mitigación de Ataques | 88% Visibilidad | 80% Reducción Tiempos de Respuesta.
+        """)
+
+    with t_s2:
+        st.markdown('<div class="section-header"><h3>⚖️ Justificación y Gestión de Falsos Positivos (Sección Clave)</h3></div>', unsafe_allow_html=True)
+        col_f1, col_f2 = st.columns(2)
+        with col_f1:
+            st.markdown("""
+            #### 1. Justificación en Entorno Judicial
+            * **Continuidad del Servicio:** Bloquear tráfico legítimo por error (falso positivo) interrumpe la carga de demandas o consultas procesales, equivaliendo a la denegación de un servicio público esencial.
+            * **Causas Comunes:** Formularios con términos jurídicos, símbolos especiales o subida de expedientes en PDF/XML que las firmas estándar confunden con inyecciones de código.
+            """)
+        with col_f2:
+            st.markdown("""
+            #### 2. Metodología de Ajuste (Policy Tuning F5)
+            1. **Fase 1 - Modo Transparente:** Aprendizaje de patrones reales sin ejecutar bloqueos activos para mapear falsas alarmas.
+            2. **Fase 2 - Excepciones Granulares:** Creación de reglas permisivas aplicadas a parámetros específicos (no deshabilitación global).
+            3. **Fase 3 - Transición a Bloqueo Activo:** Despliegue de políticas refinadas con tasa cero de afectación ciudadana.
+            """)
+
+    with t_s3:
+        st.markdown("### 🗣️ Guión Sugerido para la Defensa Verbal")
+        st.info('"Estimados miembros del tribunal evaluador, la implementación de un WAF en la Función Judicial no se limita a activar firmas de bloqueo. Un WAF no afinado que genere falsos positivos paraliza la atención ciudadana. Por ello, aplicamos una metodología rigurosa en Modo Transparente para mapear el tráfico legítimo, ejecutar afinamiento granular (Policy Tuning) a nivel de parámetros específicos y finalmente activar el Modo Bloqueo, garantizando 99.9% de disponibilidad y 95% de mitigación de amenazas."')
+
+# =============================================================================
+# PESTAÑA 3: MÓDULO ADMINISTRADOR & CARGA DIARIA DE MATRICES
+# =============================================================================
+with tab_admin:
+    st.title("⚙️ Gestión Diaria de Matrices & Almacenamiento Histórico")
+    st.caption("Cargue diariamente el archivo Excel exportado del WAF para alimentar el histórico del sistema.")
+
+    col_c1, col_c2 = st.columns([2, 1])
+
+    with col_c1:
+        st.markdown("### 📥 Subir Matriz Diaria")
+        fecha_carga = st.date_input("🗓️ Seleccionar Fecha de Carga:", obtener_hora_quito())
+        archivo_nuevo = st.file_uploader("📂 Seleccionar archivo Excel (.xlsx)", type=["xlsx"])
+
+        if archivo_nuevo and st.button("💾 Guardar y Registrar en Histórico", use_container_width=True):
+            try:
+                try:
+                    df_nuevo = pd.read_excel(archivo_nuevo, sheet_name='Reporte IPs')
+                except Exception:
+                    df_nuevo = pd.read_excel(archivo_nuevo, sheet_name=0)
+
+                f_str = fecha_carga.strftime("%Y-%m-%d")
+                df_procesado = procesar_df(df_nuevo, fecha_carga_str=f_str)
+
+                if not df_base.empty and "FechaCargaMatriz" in df_base.columns:
+                    # Eliminar si ya existían registros de esa misma fecha para sobrescribir
+                    df_base_sin_fecha = df_base[df_base["FechaCargaMatriz"].astype(str) != f_str]
+                    df_consolidado = pd.concat([df_base_sin_fecha, df_procesado], ignore_index=True)
+                else:
+                    df_consolidado = df_procesado
+
+                df_consolidado.to_excel(ARCHIVO_HISTORICO, index=False, engine="openpyxl")
+                st.cache_data.clear()
+                st.balloons()
+                st.success(f"✅ ¡Matriz correspondiente al {f_str} guardada con éxito en el histórico!")
+                time.sleep(1)
+                st.rerun()
+
+            except Exception as e:
+                st.error(f"❌ Error al procesar el archivo: {e}")
+
+    with col_c2:
+        st.markdown("### 📊 Estado del Histórico")
+        st.metric("Total Registros Acumulados", f"{len(df_base):,}")
+        fechas_hist = df_base["FechaCargaMatriz"].unique() if not df_base.empty and "FechaCargaMatriz" in df_base.columns else []
+        st.metric("Fechas Registradas", f"{len(fechas_hist)}")
+
+    st.markdown("---")
+    st.markdown("### 🗑️ Administración de Fechas")
+    if len(fechas_hist) > 0:
+        fecha_del = st.selectbox("Seleccionar fecha para borrar registros:", sorted([str(x) for x in fechas_hist], reverse=True))
+        if st.button(f"🚨 Eliminar Definitivamente Registros del {fecha_del}"):
+            df_limpio = df_base[df_base["FechaCargaMatriz"].astype(str) != fecha_del]
+            df_limpio.to_excel(ARCHIVO_HISTORICO, index=False, engine="openpyxl")
+            st.cache_data.clear()
+            st.success(f"✅ Registros del {fecha_del} eliminados del histórico.")
+            time.sleep(1)
+            st.rerun()
