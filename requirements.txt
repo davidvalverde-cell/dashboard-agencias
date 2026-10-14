@@ -1,0 +1,8 @@
+streamlit
+pandas
+plotly
+openpyxl
+pycountry
+aiohttp
+PyMuPDF
+python-docx
